@@ -1,0 +1,21 @@
+{
+    "deploy": [
+        "../deploy.md"
+    ],
+    "docs": "",
+    "features": [
+        "Dual-core",
+        "External Flash",
+        "USB-C",
+        "External RAM",
+        "JST-SH"
+    ],
+    "images": [
+        ""
+    ],
+    "mcu": "rp2350",
+    "product": "MechaTracks MicroCat.1",
+    "thumbnail": "",
+    "url": "",
+    "vendor": "MechaTracks Co., Ltd."
+}

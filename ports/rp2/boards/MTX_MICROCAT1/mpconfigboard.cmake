@@ -1,0 +1,15 @@
+# cmake file for MTX RP2350
+
+# TODO: DELETE THIS LINE WHEN SUBMODULED PICO-SDK INCLUDES THIS BOARD
+set(PICO_BOARD_HEADER_DIRS ${MICROPY_PORT_DIR}/boards/${MICROPY_BOARD})
+
+set(PICO_BOARD "mtx_microcat1")
+set(PICO_PLATFORM "rp2350")
+
+set(PICO_NUM_GPIOS 48)
+
+set(MICROPY_PY_LWIP ON)
+
+# Board specific version of the frozen manifest
+set(MICROPY_FROZEN_MANIFEST ${MICROPY_BOARD_DIR}/manifest.py)
+
