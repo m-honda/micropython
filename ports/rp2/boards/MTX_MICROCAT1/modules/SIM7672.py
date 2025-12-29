@@ -213,14 +213,26 @@ class modem:
                 return True
         return False
 
+    def __ps_detach(self, timeout=5000):
+        if self.__status_pin.value() == 0:
+            return False
+        if self.__ppp.isconnected():
+            self.__hang_ppp(timeout)
+        # Best-effort PS detach; falls back to RF off if detach fails.
+        if not self.__command_and_expect('AT+CGATT=0', 'OK', timeout=timeout):
+            self.__command_and_expect('AT+CFUN=4', 'OK', timeout=timeout)
+        return True
+
     def active(self, activate=None, reset=True):
         if activate is True:
             if reset and self.__status_pin.value() == 1:
+                self.__ps_detach()
                 self.reset()
             else:
                 self.poweron()
             return
         if activate is False:
+            self.__ps_detach()
             self.poweroff()
             return
         return self.__status_pin.value() == 1
