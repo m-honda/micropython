@@ -216,8 +216,6 @@ class modem:
     def __ps_detach(self, timeout=5000):
         if self.__status_pin.value() == 0:
             return False
-        if self.__ppp.isconnected():
-            self.__hang_ppp(timeout)
         # Best-effort PS detach; falls back to RF off if detach fails.
         if not self.__command_and_expect('AT+CGATT=0', 'OK', timeout=timeout):
             self.__command_and_expect('AT+CFUN=4', 'OK', timeout=timeout)
