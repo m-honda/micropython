@@ -199,17 +199,11 @@ class modem:
         self.__ppp.connect(security=params['security'], user=params['user'], key=params['key'])
         return True
 
-    def __hang_ppp(self, timeout=5000):
+    def __hang_ppp(self, timeout=10000):
         self.__ppp.disconnect()
-        for _ in range((timeout - 1) // 1000 + 1):
+        for _ in range((timeout - 1) // 100 + 1):
+            time.sleep_ms(100)
             if not self.__ppp.isconnected():
-                return True
-            time.sleep_ms(1000)
-        time.sleep(1)
-        self.__send('+++')
-        time.sleep(1)
-        for _ in range((timeout - 1) // 1000 + 1):
-            if self.__command_and_expect('ATH', 'OK'):
                 return True
         return False
 
@@ -440,7 +434,7 @@ class modem:
         self.__wait_pin()
         return True
 
-    def connect(self, apn=None, user=None, key=None, pdp=None, security=None, detach=True, retries=60, delay=500):
+    def connect(self, apn=None, user=None, key=None, pdp=None, security=None, detach=False, retries=60, delay=500):
         if pdp is None and self.__params['pdp'] is None:
             pdp = 'IP'
         if security is None and self.__params['security'] is None:
@@ -448,16 +442,27 @@ class modem:
         self.config(apn=apn, user=user, key=key, pdp=pdp, security=security)
         self.pon(detach, retries, delay)
 
-    def disconnect(self):
-        self.poff()
+    def disconnect(self, retries=2, delay=10000, timeout=20000):
+        if self.poff(retries=retries, delay=delay):
+            self.__expect('+PPPD: DISCONNECTED', timeout=timeout)
 
-    def pon(self, detach=False, retries=30, delay=1000):
+    def pon(self, detach=False, retries=60, delay=500, timeout=10000):
         self.__dialup_retries = retries
         self.__dialup_delay = delay
-        return self.__dial_ppp(detach)
+        if not self.__dial_ppp(detach):
+            return False
+        for _ in range((timeout - 1) // 100 + 1):
+            time.sleep_ms(100)
+            # @FIXME: Magic number 4 means PPP_STATE_CONNECTED
+            if self.__ppp.status() == 4:
+                return True
+        return False
 
-    def poff(self, timeout=5000):
-        self.__hang_ppp(timeout)
+    def poff(self, retries=2, delay=10000):
+        for _ in range(retries):
+            if self.__hang_ppp(delay):
+                return True
+        return False
 
     def ifconfig(self):
         return self.__ppp.ifconfig()
