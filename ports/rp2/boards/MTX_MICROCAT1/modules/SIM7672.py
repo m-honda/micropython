@@ -217,21 +217,21 @@ class modem:
 
     def active(self, activate=None, reset=True):
         if activate is True:
-            if reset and self.__status_pin.value() == 1:
+            if self.__status_pin.value() == 0:
+                self.__poweron()
+            elif reset is True:
                 self.__ps_detach()
-                self.reset()
-            else:
-                self.poweron()
+                self.__reset()
             return
         if activate is False:
+            if self.__status_pin.value() == 0:
+                return
             self.__ps_detach()
-            self.poweroff()
+            self.__poweroff()
             return
         return self.__status_pin.value() == 1
 
-    def poweron(self):
-        if self.__status_pin.value() == 1:
-            return True
+    def __poweron(self):
         self.__reset_pin.off()
         if self.__power_pin.value() == 1:
             self.__power_pin.off()
@@ -245,10 +245,8 @@ class modem:
                 return True
         return False
 
-    def poweroff(self):
+    def __poweroff(self):
         self.__uart.init(baudrate=__DEFAULT_BAUDRATE, flow=0)
-        if self.__status_pin.value() == 0:
-            return True
         self.__reset_pin.off()
         if self.__power_pin.value() == 1:
             self.__power_pin.off()
@@ -262,7 +260,7 @@ class modem:
                 return True
         return False
 
-    def reset(self):
+    def __reset(self):
         self.__uart.init(baudrate=__DEFAULT_BAUDRATE, flow=0)
         self.__power_pin.off()
         if self.__reset_pin.value() == 1:
@@ -440,14 +438,14 @@ class modem:
         if security is None and self.__params['security'] is None:
             security = PPP.SEC_CHAP|PPP.SEC_PAP
         self.config(apn=apn, user=user, key=key, pdp=pdp, security=security)
-        self.pon(detach=detach, retries=retries, delay=delay, transition_timeout=transition_timeout)
+        self.__pon(detach=detach, retries=retries, delay=delay, transition_timeout=transition_timeout)
 
     def disconnect(self, retries=2, delay=10000, transition_timeout=20000):
         if not self.__ppp.isconnected():
             return
-        self.poff(retries=retries, delay=delay, transition_timeout=transition_timeout)
+        self.__poff(retries=retries, delay=delay, transition_timeout=transition_timeout)
 
-    def pon(self, detach=False, retries=60, delay=500, transition_timeout=10000):
+    def __pon(self, detach=False, retries=60, delay=500, transition_timeout=10000):
         self.__dialup_retries = retries
         self.__dialup_delay = delay
         if not self.__dial_ppp(detach):
@@ -459,7 +457,7 @@ class modem:
                 return True
         return False
 
-    def poff(self, retries=2, delay=10000, transition_timeout=20000):
+    def __poff(self, retries=2, delay=10000, transition_timeout=20000):
         for _ in range(retries):
             if self.__hang_ppp(delay):
                 if self.__expect('+PPPD: DISCONNECTED', timeout=transition_timeout):
