@@ -424,11 +424,7 @@ class modem:
                     cont_cmd += f",{params['apn']}"
             self.__command_and_expect(cont_cmd, 'OK')
         if auth_is_updated:
-            auth_cmd = f"AT+CGAUTH=1,{params['security']}"
-            if params['user'] != "":
-                auth_cmd += f",{params['user']}"
-                if params['key'] != "":
-                    auth_cmd += f",{params['key']}"
+            auth_cmd = f"AT+CGAUTH=1,{params['security']},{params['key']},{params['user']}"
             self.__command_and_expect(auth_cmd, 'OK')
         self.__command_and_expect('AT+CFUN=1', 'OK', timeout=timeout)
         self.__wait_pin()
