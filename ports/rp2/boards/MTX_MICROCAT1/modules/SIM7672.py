@@ -33,7 +33,10 @@ PDP_NONIP = 'Non-IP'
 
 class modem:
     def __init__(self, uart=UART(1), baudrate=__DEFAULT_BAUDRATE, handshake=True, led=Pin(__GPIO_LED_PIN), debug=False):
-        self.__enable_debug = debug
+        if debug:
+            self.__dbg_print = print
+        else:
+            self.__dbg_print = lambda *a, **k: None
         self.__params = {
             'apn': None,
             'user': None,
@@ -92,8 +95,7 @@ class modem:
                 time.sleep_ms(1)
                 continue
             line += data
-            if self.__enable_debug:
-                print(data)
+            self.__dbg_print(data)
             if data[-1] != ord('\n'):
                 continue
             try:
@@ -130,8 +132,7 @@ class modem:
         if self.__uart.any():
             self.__uart.read()
         self.__send(cmd + '\r\n')
-        if self.__enable_debug:
-            print(cmd + '\r\n')
+        self.__dbg_print(cmd + '\r\n')
         if not self.__expect(cmd, aborts, timeout):
             return False
         return True
@@ -218,16 +219,31 @@ class modem:
     def active(self, activate=None, reset=True):
         if activate is True:
             if self.__status_pin.value() == 0:
-                self.__poweron()
+                self.__dbg_print('POWER ON MODEM')
+                if self.__poweron():
+                    self.__dbg_print('SUCCESS')
+                else:
+                    self.__dbg_print('FAILURE')
             elif reset is True:
                 self.__ps_detach()
-                self.__reset()
+                self.__dbg_print('RESET MODEM')
+                if self.__reset():
+                    self.__dbg_print('SUCCESS')
+                else:
+                    self.__dbg_print('FAILURE')
+            else:
+                self.__dbg_print('ALREADY ON')
             return
         if activate is False:
             if self.__status_pin.value() == 0:
+                self.__dbg_print('ALREADY OFF')
                 return
             self.__ps_detach()
-            self.__poweroff()
+            self.__dbg_print('POWER OFF MODEM')
+            if self.__poweroff():
+                self.__dbg_print('SUCCESS')
+            else:
+                self.__dbg_print('FAILURE')
             return
         return self.__status_pin.value() == 1
 
