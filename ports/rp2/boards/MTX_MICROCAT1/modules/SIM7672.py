@@ -33,7 +33,10 @@ PDP_NONIP = 'Non-IP'
 
 class modem:
     def __init__(self, uart=UART(1), baudrate=__DEFAULT_BAUDRATE, handshake=True, led=Pin(__GPIO_LED_PIN), debug=False):
-        self.__enable_debug = debug
+        if debug:
+            self.__dbg_print = print
+        else:
+            self.__dbg_print = lambda *a, **k: None
         self.__params = {
             'apn': None,
             'user': None,
@@ -92,8 +95,7 @@ class modem:
                 time.sleep_ms(1)
                 continue
             line += data
-            if self.__enable_debug:
-                print(data)
+            self.__dbg_print(data)
             if data[-1] != ord('\n'):
                 continue
             try:
@@ -130,8 +132,7 @@ class modem:
         if self.__uart.any():
             self.__uart.read()
         self.__send(cmd + '\r\n')
-        if self.__enable_debug:
-            print(cmd + '\r\n')
+        self.__dbg_print(cmd + '\r\n')
         if not self.__expect(cmd, aborts, timeout):
             return False
         return True
@@ -217,21 +218,36 @@ class modem:
 
     def active(self, activate=None, reset=True):
         if activate is True:
-            if reset and self.__status_pin.value() == 1:
+            if self.__status_pin.value() == 0:
+                self.__dbg_print('POWER ON MODEM')
+                if self.__poweron():
+                    self.__dbg_print('SUCCESS')
+                else:
+                    self.__dbg_print('FAILURE')
+            elif reset is True:
                 self.__ps_detach()
-                self.reset()
+                self.__dbg_print('RESET MODEM')
+                if self.__reset():
+                    self.__dbg_print('SUCCESS')
+                else:
+                    self.__dbg_print('FAILURE')
             else:
-                self.poweron()
+                self.__dbg_print('ALREADY ON')
             return
         if activate is False:
+            if self.__status_pin.value() == 0:
+                self.__dbg_print('ALREADY OFF')
+                return
             self.__ps_detach()
-            self.poweroff()
+            self.__dbg_print('POWER OFF MODEM')
+            if self.__poweroff():
+                self.__dbg_print('SUCCESS')
+            else:
+                self.__dbg_print('FAILURE')
             return
         return self.__status_pin.value() == 1
 
-    def poweron(self):
-        if self.__status_pin.value() == 1:
-            return True
+    def __poweron(self):
         self.__reset_pin.off()
         if self.__power_pin.value() == 1:
             self.__power_pin.off()
@@ -245,10 +261,8 @@ class modem:
                 return True
         return False
 
-    def poweroff(self):
+    def __poweroff(self):
         self.__uart.init(baudrate=__DEFAULT_BAUDRATE, flow=0)
-        if self.__status_pin.value() == 0:
-            return True
         self.__reset_pin.off()
         if self.__power_pin.value() == 1:
             self.__power_pin.off()
@@ -262,7 +276,7 @@ class modem:
                 return True
         return False
 
-    def reset(self):
+    def __reset(self):
         self.__uart.init(baudrate=__DEFAULT_BAUDRATE, flow=0)
         self.__power_pin.off()
         if self.__reset_pin.value() == 1:
@@ -393,24 +407,26 @@ class modem:
         result = self.__receive()
         if 'ERROR' in result:
             return False
-        try:
-            ans = result.split(',')
-            pdp, apn = ans[1:3]
-        except (IndexError, ValueError):
-            pass
-        self.__expect('OK')
+        if 'OK' not in result:
+            try:
+                ans = result.split(',')
+                pdp, apn = ans[1:3]
+            except (IndexError, ValueError):
+                pass
+            self.__expect('OK')
         if pdp != f"\"{params['pdp']}\"" or apn != f"\"{params['apn']}\"":
             cont_is_updated = True
         self.__command('AT+CGAUTH?')
         result = self.__receive()
         if 'ERROR' in result:
             return False
-        try:
-            ans = result.split(',')
-            sec, user, key = ans[1:4]
-        except (IndexError, ValueError):
-            pass
-        self.__expect('OK')
+        if 'OK' not in result:
+            try:
+                ans = result.split(',')
+                sec, user, key = ans[1:4]
+            except (IndexError, ValueError):
+                pass
+            self.__expect('OK')
         if sec != f"{params['security']}" or user != f"\"{params['user']}\"" or key != f"\"{params['key']}\"":
             auth_is_updated = True
         if not detach and not cont_is_updated and not auth_is_updated:
@@ -424,44 +440,46 @@ class modem:
                     cont_cmd += f",{params['apn']}"
             self.__command_and_expect(cont_cmd, 'OK')
         if auth_is_updated:
-            auth_cmd = f"AT+CGAUTH=1,{params['security']}"
-            if params['user'] != "":
-                auth_cmd += f",{params['user']}"
-                if params['key'] != "":
-                    auth_cmd += f",{params['key']}"
+            auth_cmd = f"AT+CGAUTH=1,{params['security']},{params['key']},{params['user']}"
             self.__command_and_expect(auth_cmd, 'OK')
         self.__command_and_expect('AT+CFUN=1', 'OK', timeout=timeout)
         self.__wait_pin()
         return True
 
-    def connect(self, apn=None, user=None, key=None, pdp=None, security=None, detach=False, retries=60, delay=500):
+    def connect(self, apn=None, user=None, key=None, pdp=None, security=None, detach=False, retries=60, delay=500, transition_timeout=10000):
+        if self.__ppp.isconnected():
+            return
         if pdp is None and self.__params['pdp'] is None:
             pdp = 'IP'
         if security is None and self.__params['security'] is None:
             security = PPP.SEC_CHAP|PPP.SEC_PAP
         self.config(apn=apn, user=user, key=key, pdp=pdp, security=security)
-        self.pon(detach, retries, delay)
+        self.__pon(detach=detach, retries=retries, delay=delay, transition_timeout=transition_timeout)
 
-    def disconnect(self, retries=2, delay=10000, timeout=20000):
-        if self.poff(retries=retries, delay=delay):
-            self.__expect('+PPPD: DISCONNECTED', timeout=timeout)
+    def disconnect(self, retries=2, delay=10000, transition_timeout=20000):
+        if not self.__ppp.isconnected():
+            return
+        self.__poff(retries=retries, delay=delay, transition_timeout=transition_timeout)
 
-    def pon(self, detach=False, retries=60, delay=500, timeout=10000):
+    def __pon(self, detach=False, retries=60, delay=500, transition_timeout=10000):
         self.__dialup_retries = retries
         self.__dialup_delay = delay
         if not self.__dial_ppp(detach):
             return False
-        for _ in range((timeout - 1) // 100 + 1):
+        for _ in range((transition_timeout - 1) // 100 + 1):
             time.sleep_ms(100)
             # @FIXME: Magic number 4 means PPP_STATE_CONNECTED
             if self.__ppp.status() == 4:
                 return True
         return False
 
-    def poff(self, retries=2, delay=10000):
+    def __poff(self, retries=2, delay=10000, transition_timeout=20000):
         for _ in range(retries):
             if self.__hang_ppp(delay):
-                return True
+                if self.__expect('+PPPD: DISCONNECTED', timeout=transition_timeout):
+                    return True
+                else:
+                    return False
         return False
 
     def ifconfig(self):
