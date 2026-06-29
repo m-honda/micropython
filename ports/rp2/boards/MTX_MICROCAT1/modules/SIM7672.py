@@ -11,10 +11,12 @@ import time
 
 __DEFAULT_BAUDRATE = const(115200)
 __DEFAULT_BUFFER_SIZE = const(2048)
-__GPIO_POWER_PIN = const(30)
-__GPIO_RESET_PIN = const(31)
-__GPIO_STATUS_PIN = const(32)
-__GPIO_LED_PIN = const(29)
+__GPIO_MODEM_POWER_PIN = const(30)
+__GPIO_MODEM_RESET_PIN = const(31)
+__GPIO_MODEM_STATUS_PIN = const(32)
+__GPIO_SMPS_ENABLE_PIN = const(33)
+__GPIO_LED_PIN = const(34)
+__SMPS_ENABLE_DELAY = const(50)
 __POWERON_TIMEOUT = const(20000)
 __POWEROFF_TIMEOUT = const(10000)
 __RESET_TIMEOUT = const(__POWERON_TIMEOUT + __POWEROFF_TIMEOUT)
@@ -44,9 +46,10 @@ class modem:
             'security': None,
             'pdp': None,
         }
-        self.__power_pin = Pin(__GPIO_POWER_PIN, Pin.OUT)
-        self.__reset_pin = Pin(__GPIO_RESET_PIN, Pin.OUT)
-        self.__status_pin = Pin(__GPIO_STATUS_PIN, Pin.IN)
+        self.__enable_pin = Pin(__GPIO_SMPS_ENABLE_PIN, Pin.OUT)
+        self.__power_pin = Pin(__GPIO_MODEM_POWER_PIN, Pin.OUT)
+        self.__reset_pin = Pin(__GPIO_MODEM_RESET_PIN, Pin.OUT)
+        self.__status_pin = Pin(__GPIO_MODEM_STATUS_PIN, Pin.IN)
         self.__uart = uart
         self.__uart.init(
             __DEFAULT_BAUDRATE,
@@ -105,7 +108,7 @@ class modem:
             return s
         return None
 
-    def __expect(self, exp, aborts=['ERROR'], timeout=10000):
+    def __expect(self, exp, aborts=('ERROR'), timeout=10000):
         deadline = time.ticks_add(time.ticks_ms(), timeout)
         while time.ticks_diff(deadline, time.ticks_ms()) > 0:
             rcv = self.__receive(timeout)
@@ -116,6 +119,20 @@ class modem:
                     if abort in rcv:
                         return False
         return False
+
+    def __receive_result(self, header, aborts=('ERROR', 'OK'), timeout=1000):
+        while True:
+            result = self.__receive(timeout)
+            if result is None:
+                return None
+            if result.startswith(header):
+                try:
+                    return result.split(':', 1)[1].lstrip()
+                finally:
+                    self.__expect('OK', timeout=timeout)
+            for abort in aborts:
+                if abort in result:
+                    return None
 
     def __send(self, cmd, timeout=1000):
         if isinstance(cmd, str):
@@ -128,7 +145,7 @@ class modem:
             timeout -= 1
         return False
 
-    def __command(self, cmd, aborts=[], timeout=1000):
+    def __command(self, cmd, aborts=(), timeout=1000):
         if self.__uart.any():
             self.__uart.read()
         self.__send(cmd + '\r\n')
@@ -137,65 +154,59 @@ class modem:
             return False
         return True
 
-    def __command_and_expect(self, cmd, exp=None, aborts=['ERROR'], timeout=10000):
-        if self.__uart.any():
-            self.__uart.read()
-        if not self.__command(cmd):
+    def __command_and_expect(self, cmd, exp=None, aborts=('ERROR'), command_timeout=1000, expect_timeout=10000):
+        if not self.__command(cmd, timeout=command_timeout):
             return False
         if exp is None:
             return True
-        return self.__expect(exp, aborts, timeout)
+        return self.__expect(exp, aborts, timeout=expect_timeout)
+
+    def __query_and_result(self, cmd, aborts=('ERROR', 'OK'), command_timeout=1000, result_timeout=1000):
+        if cmd[:3] != "AT+" or cmd[-1] != "?":
+            return None
+        header = cmd[2:-1] + ":"
+        if not self.__command(cmd, timeout=command_timeout):
+            return None
+        return self.__receive_result(header, aborts, timeout=result_timeout)
 
     def __wait_pin(self, retries=20, delay=500):
-        cpin_stat = None
         for _ in range(retries):
-            if self.__command('AT+CPIN?', timeout=5000):
-                result = self.__receive()
-                if 'ERROR' not in result:
-                    try:
-                        cpin_stat = result.split(' ')[-1]
-                    except (IndexError, ValueError):
-                        return False
-                    finally:
-                        self.__expect('OK')
-                if cpin_stat == 'READY':
-                    return True
+            if self.__query_and_result('AT+CPIN?', command_timeout=5000) == 'READY':
+                return True
             time.sleep_ms(delay)
         return False
 
     def __wait_reg(self, retries, delay):
-        cereg_stat = None
         for _ in range(retries):
-            if self.__command('AT+CEREG?'):
-                result = self.__receive()
-                if 'ERROR' not in result:
-                    try:
-                        cereg_stat = int(result.split(',')[-1])
-                    except (IndexError, ValueError):
-                        return False
-                    finally:
-                        self.__expect('OK')
-                if cereg_stat == 1 or cereg_stat == 5:
-                    return True
+            value = self.__query_and_result('AT+CEREG?')
+            if value is not None:
+                try:
+                    if int(value.split(',')[1]) in (1, 5):
+                        return True
+                except (IndexError, ValueError):
+                    pass
             time.sleep_ms(delay)
         return False
 
     def __dial_ppp(self, detach=False):
         params = self.__params.copy()
-        if self.__params['security'] & PPP.SEC_CHAP:
+        if params['security'] is None:
+            params['security'] = PPP.SEC_NONE
+        if params['security'] & PPP.SEC_CHAP:
             params['security'] = PPP.SEC_CHAP
-        elif self.__params['security'] & PPP.SEC_PAP:
+        elif params['security'] & PPP.SEC_PAP:
             params['security'] = PPP.SEC_PAP
         else:
             params['security'] = PPP.SEC_NONE
         if not self.__setup_modem():
             return False
-        self.__wait_pin()
+        if not self.__wait_pin():
+            return False
         if not self.__config_network(params, detach):
             return False
         if not self.__wait_reg(self.__dialup_retries, self.__dialup_delay):
             return False
-        if not self.__command_and_expect('ATD*99***1#', 'CONNECT'):
+        if not self.__command_and_expect('ATD*99***1#', 'CONNECT', aborts=('ERROR', 'NO CARRIER')):
             return False
         self.__ppp.connect(security=params['security'], user=params['user'], key=params['key'])
         return True
@@ -212,8 +223,8 @@ class modem:
         if self.__status_pin.value() == 0:
             return False
         # Best-effort PS detach; falls back to RF off if detach fails.
-        if not self.__command_and_expect('AT+CGATT=0', 'OK', timeout=timeout):
-            self.__command_and_expect('AT+CFUN=4', 'OK', timeout=timeout)
+        if not self.__command_and_expect('AT+CGATT=0', 'OK', expect_timeout=timeout):
+            self.__command_and_expect('AT+CFUN=4', 'OK', expect_timeout=timeout)
         return True
 
     def active(self, activate=None, reset=True):
@@ -248,6 +259,8 @@ class modem:
         return self.__status_pin.value() == 1
 
     def __poweron(self):
+        self.__enable_pin.on()
+        time.sleep_ms(__SMPS_ENABLE_DELAY)
         self.__reset_pin.off()
         if self.__power_pin.value() == 1:
             self.__power_pin.off()
@@ -261,7 +274,7 @@ class modem:
                 return True
         return False
 
-    def __poweroff(self):
+    def __poweroff(self, force=False):
         self.__uart.init(baudrate=__DEFAULT_BAUDRATE, flow=0)
         self.__reset_pin.off()
         if self.__power_pin.value() == 1:
@@ -273,7 +286,11 @@ class modem:
         for _ in range(__POWEROFF_TIMEOUT // __TIMEOUT_POLLING_INTERVAL):
             time.sleep_ms(__TIMEOUT_POLLING_INTERVAL)
             if self.__status_pin.value() == 0:
+                self.__enable_pin.off()
                 return True
+        if force is True:
+            self.__enable_pin.off()
+            return True
         return False
 
     def __reset(self):
@@ -296,7 +313,7 @@ class modem:
             self.__uart.read()
 
     def __setup_modem(self):
-        if not (self.__command('AT', timeout=5000) and self.__expect('OK')):
+        if not self.__command_and_expect('AT', 'OK', command_timeout=5000):
             self.__command_and_expect('ATH', 'OK')
             if not self.__command_and_expect('AT', 'OK'):
                 for _ in range(3):
@@ -312,30 +329,20 @@ class modem:
                     time.sleep(1)
                 if not self.__command_and_expect('AT', 'OK'):
                     return False
-        self.__command('AT+CEREG?')
-        result = self.__receive()
-
-        if 'ERROR' in result:
+        value = self.__query_and_result('AT+CEREG?')
+        if value is None:
             return False
         try:
-            cereg_mode = int(result.split(',')[0][-1])
+            cereg_mode = int(value.split(',')[0])
         except (IndexError, ValueError):
             return False
-        finally:
-            self.__expect('OK')
         if cereg_mode != 0:
             if not self.__command_and_expect('AT+CREG=0', 'OK'):
                 return False
-        self.__command('AT+IFC?')
-        result = self.__receive()
-        if 'ERROR' in result:
+        value = self.__query_and_result('AT+IFC?')
+        if value is None:
             return False
-        try:
-            current_flowcontrol = result.split(' ')[-1]
-        except (IndexError, ValueError):
-            return False
-        finally:
-            self.__expect('OK')
+        current_flowcontrol = value
         if self.__handshake:
             if current_flowcontrol != '2,2':
                 if not self.__command_and_expect('AT+IFC=2,2', 'OK'):
@@ -348,16 +355,13 @@ class modem:
                     return False
                 self.__uart.init(flow=0)
                 self.__clear_buffers()
-        self.__command('AT+IPR?')
-        result = self.__receive()
-        if 'ERROR' in result:
+        value = self.__query_and_result('AT+IPR?')
+        if value is None:
             return False
         try:
-            current_baudrate = int(result.split(' ')[-1])
-        except (IndexError, ValueError):
+            current_baudrate = int(value)
+        except ValueError:
             return False
-        finally:
-            self.__expect('OK')
         if self.__baudrate != current_baudrate:
             if not self.__command_and_expect(f'AT+IPR={self.__baudrate}', 'OK'):
                 return False
@@ -405,7 +409,7 @@ class modem:
         auth_is_updated = False
         self.__command('AT+CGDCONT?')
         result = self.__receive()
-        if 'ERROR' in result:
+        if result is None or 'ERROR' in result:
             return False
         if 'OK' not in result:
             try:
@@ -418,7 +422,7 @@ class modem:
             cont_is_updated = True
         self.__command('AT+CGAUTH?')
         result = self.__receive()
-        if 'ERROR' in result:
+        if result is None or 'ERROR' in result:
             return False
         if 'OK' not in result:
             try:
@@ -435,14 +439,14 @@ class modem:
         if cont_is_updated:
             cont_cmd = "AT+CGDCONT=1"
             if params['pdp'] != "":
-                cont_cmd += f",{params['pdp']}"
+                cont_cmd += f",\"{params['pdp']}\""
                 if params['apn'] != "":
-                    cont_cmd += f",{params['apn']}"
+                    cont_cmd += f",\"{params['apn']}\""
             self.__command_and_expect(cont_cmd, 'OK')
         if auth_is_updated:
             auth_cmd = f"AT+CGAUTH=1,{params['security']},{params['key']},{params['user']}"
             self.__command_and_expect(auth_cmd, 'OK')
-        self.__command_and_expect('AT+CFUN=1', 'OK', timeout=timeout)
+        self.__command_and_expect('AT+CFUN=1', 'OK', expect_timeout=timeout)
         self.__wait_pin()
         return True
 
